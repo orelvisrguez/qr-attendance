@@ -4,7 +4,7 @@
 // ============================================
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { supabaseAdmin } from '../_lib/supabase.js';
+import { supabaseAdmin, isSupabaseConfigured } from '../_lib/supabase.js';
 
 // CORS headers helper
 function setCorsHeaders(res: VercelResponse) {
@@ -55,70 +55,73 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     let subjects: any[] = [];
     let isFromDatabase = false;
 
-    try {
-      // Obtener cursos asignados al profesor
-      const { data: courseAssignments, error: courseError } = await supabaseAdmin
-        .from('course_profesors')
-        .select(`
-          course:courses (
-            id,
-            name,
-            grade,
-            section,
-            year,
-            is_active
-          )
-        `)
-        .eq('profesor_id', profesorId);
+    // Solo intentar usar Supabase si está configurado
+    if (isSupabaseConfigured) {
+      try {
+        // Obtener cursos asignados al profesor
+        const { data: courseAssignments, error: courseError } = await supabaseAdmin
+          .from('course_profesors')
+          .select(`
+            course:courses (
+              id,
+              name,
+              grade,
+              section,
+              year,
+              is_active
+            )
+          `)
+          .eq('profesor_id', profesorId);
 
-      if (!courseError && courseAssignments && courseAssignments.length > 0) {
-        isFromDatabase = true;
+        if (!courseError && courseAssignments && courseAssignments.length > 0) {
+          isFromDatabase = true;
 
-        // Extraer cursos únicos
-        const courseIds: string[] = [];
-        courses = courseAssignments
-          .map((ca: any) => ca.course)
-          .filter((c: any) => c && c.is_active)
-          .map((c: any) => {
-            courseIds.push(c.id);
-            return {
-              id: c.id,
-              name: c.name,
-              grade: c.grade,
-              section: c.section,
-              year: c.year,
-            };
-          });
+          // Extraer cursos únicos
+          const courseIds: string[] = [];
+          courses = courseAssignments
+            .map((ca: any) => ca.course)
+            .filter((c: any) => c && c.is_active)
+            .map((c: any) => {
+              courseIds.push(c.id);
+              return {
+                id: c.id,
+                name: c.name,
+                grade: c.grade,
+                section: c.section,
+                year: c.year,
+              };
+            });
 
-        // Obtener materias de esos cursos
-        if (courseIds.length > 0) {
-          const { data: subjectData } = await supabaseAdmin
-            .from('subjects')
-            .select('id, name, code, course_id')
-            .in('course_id', courseIds);
+          // Obtener materias de esos cursos
+          if (courseIds.length > 0) {
+            const { data: subjectData } = await supabaseAdmin
+              .from('subjects')
+              .select('id, name, code, course_id')
+              .in('course_id', courseIds);
 
-          if (subjectData) {
-            subjects = subjectData.map((s: any) => ({
-              id: s.id,
-              name: s.name,
-              code: s.code,
-              courseId: s.course_id,
-            }));
+            if (subjectData) {
+              subjects = subjectData.map((s: any) => ({
+                id: s.id,
+                name: s.name,
+                code: s.code,
+                courseId: s.course_id,
+              }));
+            }
+          }
+
+          // Obtener conteo de estudiantes por curso
+          for (const course of courses) {
+            const { count } = await supabaseAdmin
+              .from('course_students')
+              .select('*', { count: 'exact', head: true })
+              .eq('course_id', course.id);
+
+            course.studentCount = count || 0;
           }
         }
-
-        // Obtener conteo de estudiantes por curso
-        for (const course of courses) {
-          const { count } = await supabaseAdmin
-            .from('course_students')
-            .select('*', { count: 'exact', head: true })
-            .eq('course_id', course.id);
-
-          course.studentCount = count || 0;
-        }
+      } catch (dbError) {
+        console.log('Database not available, using mock data');
       }
-    } catch (dbError) {
-      console.log('Database not available, using mock data');
     }
 
     // Fallback a mock data

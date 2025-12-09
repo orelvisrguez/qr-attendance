@@ -2,18 +2,23 @@
 // SUPABASE CLIENT FOR SERVERLESS FUNCTIONS
 // ============================================
 
-import { createClient } from '@supabase/supabase-js';
+import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
-const supabaseUrl = process.env.SUPABASE_URL!;
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+const supabaseUrl = process.env.SUPABASE_URL || '';
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+
+// Flag para verificar si Supabase está configurado
+export const isSupabaseConfigured = !!(supabaseUrl && supabaseServiceKey);
 
 // Cliente con service role para operaciones del servidor
-export const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
-  auth: {
-    autoRefreshToken: false,
-    persistSession: false,
-  },
-});
+export const supabaseAdmin: SupabaseClient = isSupabaseConfigured
+  ? createClient(supabaseUrl, supabaseServiceKey, {
+      auth: {
+        autoRefreshToken: false,
+        persistSession: false,
+      },
+    })
+  : (null as unknown as SupabaseClient); // Will use mock data when not configured
 
 // Tipos para la base de datos
 export interface DbUser {
