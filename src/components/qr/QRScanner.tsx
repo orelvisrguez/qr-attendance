@@ -7,6 +7,7 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { Html5Qrcode, Html5QrcodeResult } from 'html5-qrcode';
 import { supabase } from '../../lib/supabase';
+import { API_URL } from '../../lib/api';
 import type { RealtimeChannel } from '@supabase/supabase-js';
 
 type ScanStatus = 'idle' | 'scanning' | 'success' | 'error' | 'processing';
@@ -128,37 +129,61 @@ export const QRScanner: React.FC<QRScannerProps> = ({
       });
   }, []);
 
-  // Registrar asistencia vía Supabase
+  // Registrar asistencia vía API real
   const registerAttendance = useCallback(async (
     sessionId: string,
     token: string,
     nonce: string,
+    expiresAt: number,
     fingerprint: string
-  ) => {
+  ): Promise<{ success: boolean; message: string; status?: string }> => {
     try {
-      // En producción, esto iría a una Edge Function de Supabase
-      // Por ahora, broadcast directamente
-      const channel = supabase.channel(`attendance-${sessionId}`);
+      // Llamar a la API real para registrar asistencia
+      const response = await fetch(`${API_URL}/api/attendance`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          sessionId,
+          studentId: userId,
+          token,
+          nonce,
+          expiresAt,
+          deviceFingerprint: fingerprint,
+        }),
+      });
 
+      const data = await response.json();
+
+      if (!response.ok) {
+        // Error específico de duplicado
+        if (response.status === 409) {
+          throw new Error(data.error || 'Ya registraste tu asistencia en esta clase');
+        }
+        throw new Error(data.error || 'Error al registrar asistencia');
+      }
+
+      // También hacer broadcast para actualización en tiempo real del proyector
+      const channel = supabase.channel(`attendance-${sessionId}`);
       await channel.send({
         type: 'broadcast',
         event: 'attendance-registered',
         payload: {
-          id: `att-${Date.now()}`,
+          id: data.data.id,
           studentId: userId,
           studentName: studentName,
-          token: token.substring(0, 8),
-          timestamp: Date.now(),
-          status: 'PRESENT',
-          deviceFingerprint: fingerprint.substring(0, 16),
+          status: data.data.status,
+          scannedAt: data.data.scannedAt,
         },
       });
 
-      // Guardar en DB (cuando esté configurada)
-      // await supabase.from('attendance').insert({...})
-
-      return { success: true };
-    } catch (err) {
+      return {
+        success: true,
+        message: data.data.message,
+        status: data.data.status,
+      };
+    } catch (err: any) {
       console.error('Error registrando asistencia:', err);
       throw err;
     }
@@ -203,11 +228,11 @@ export const QRScanner: React.FC<QRScannerProps> = ({
         // Generar fingerprint
         const fingerprint = await generateDeviceFingerprint();
 
-        // Registrar asistencia
-        await registerAttendance(payload.s, payload.t, payload.n, fingerprint);
+        // Registrar asistencia via API real
+        const result = await registerAttendance(payload.s, payload.t, payload.n, payload.e, fingerprint);
 
         setStatus('success');
-        setMessage('¡Asistencia registrada!');
+        setMessage(result.message || '¡Asistencia registrada!');
         onSuccess?.();
 
         // Limpiar después de mostrar éxito
