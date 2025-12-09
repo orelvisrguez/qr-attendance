@@ -1,0 +1,268 @@
+// ============================================
+// QR ATTENDANCE SYSTEM - DATABASE SCHEMA
+// Sistema de Asistencia con QR Dinámico
+// ============================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL") // Required for Supabase with PgBouncer
+}
+
+// ============================================
+// ENUMS
+// ============================================
+
+enum UserRole {
+  ADMIN
+  PROFESOR
+  ALUMNO
+}
+
+enum AttendanceStatus {
+  PRESENTE
+  AUSENTE
+  TARDANZA
+  JUSTIFICADO
+}
+
+enum SessionStatus {
+  ACTIVE
+  PAUSED
+  CLOSED
+}
+
+// ============================================
+// USERS & AUTHENTICATION
+// ============================================
+
+model User {
+  id              String    @id @default(cuid())
+  email           String    @unique
+  password        String    // Hashed con bcrypt
+  firstName       String
+  lastName        String
+  role            UserRole  @default(ALUMNO)
+  avatar          String?
+  isActive        Boolean   @default(true)
+  emailVerified   DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  // Relaciones según rol
+  profesorCourses   CourseProfesor[]
+  studentCourses    CourseStudent[]
+  attendances       Attendance[]
+  sessions          AttendanceSession[]  // Sessions creadas por profesor
+  deviceFingerprints DeviceFingerprint[]
+
+  @@index([email])
+  @@index([role])
+}
+
+// ============================================
+// ACADEMIC STRUCTURE
+// ============================================
+
+model Course {
+  id          String   @id @default(cuid())
+  name        String   // Ej: "3ro A", "5to B"
+  grade       String   // Ej: "3ro Secundaria"
+  section     String   // Ej: "A", "B"
+  year        Int      // Año académico
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  profesors   CourseProfesor[]
+  students    CourseStudent[]
+  subjects    Subject[]
+  sessions    AttendanceSession[]
+
+  @@unique([grade, section, year])
+  @@index([year, isActive])
+}
+
+model Subject {
+  id          String   @id @default(cuid())
+  name        String   // Ej: "Matemáticas", "Historia"
+  code        String   // Ej: "MAT-101"
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  course      Course   @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  courseId    String
+
+  sessions    AttendanceSession[]
+
+  @@unique([code, courseId])
+  @@index([courseId])
+}
+
+// ============================================
+// RELACIONES CURSO-USUARIO (Many-to-Many)
+// ============================================
+
+model CourseProfesor {
+  id          String   @id @default(cuid())
+  course      Course   @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  courseId    String
+  profesor    User     @relation(fields: [profesorId], references: [id], onDelete: Cascade)
+  profesorId  String
+  assignedAt  DateTime @default(now())
+
+  @@unique([courseId, profesorId])
+  @@index([profesorId])
+}
+
+model CourseStudent {
+  id          String   @id @default(cuid())
+  course      Course   @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  courseId    String
+  student     User     @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  studentId   String
+  enrolledAt  DateTime @default(now())
+
+  @@unique([courseId, studentId])
+  @@index([studentId])
+}
+
+// ============================================
+// ATTENDANCE SESSION (Sesión de Clase)
+// ============================================
+
+model AttendanceSession {
+  id            String        @id @default(cuid())
+
+  // Relaciones
+  course        Course        @relation(fields: [courseId], references: [id])
+  courseId      String
+  subject       Subject       @relation(fields: [subjectId], references: [id])
+  subjectId     String
+  profesor      User          @relation(fields: [profesorId], references: [id])
+  profesorId    String
+
+  // Estado de la sesión
+  status        SessionStatus @default(ACTIVE)
+
+  // Seguridad: Secreto para generar tokens TOTP-like
+  secret        String        // Secreto único para esta sesión (32 bytes hex)
+
+  // Configuración
+  qrRotationSeconds Int       @default(7)    // Cada cuántos segundos rota el QR
+  tokenValidSeconds Int       @default(10)   // Ventana de validez del token
+
+  // Timestamps
+  startedAt     DateTime      @default(now())
+  endedAt       DateTime?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  // Relaciones
+  attendances   Attendance[]
+  usedTokens    UsedToken[]   // Para prevenir replay attacks
+
+  @@index([courseId, subjectId])
+  @@index([profesorId, status])
+  @@index([startedAt])
+}
+
+// ============================================
+// ATTENDANCE RECORD (Registro de Asistencia)
+// ============================================
+
+model Attendance {
+  id              String           @id @default(cuid())
+
+  session         AttendanceSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  sessionId       String
+  student         User             @relation(fields: [studentId], references: [id])
+  studentId       String
+
+  status          AttendanceStatus @default(PRESENTE)
+
+  // Metadata de seguridad
+  scannedAt       DateTime         @default(now())
+  deviceFingerprint String?        // Hash del dispositivo
+  ipAddress       String?          // IP desde donde se escaneó
+  userAgent       String?          // User agent del navegador
+
+  // Para validación adicional
+  tokenUsed       String?          // El nonce del token que usó
+
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  @@unique([sessionId, studentId])  // Un alumno solo puede tener un registro por sesión
+  @@index([sessionId])
+  @@index([studentId])
+  @@index([scannedAt])
+}
+
+// ============================================
+// SECURITY: Used Tokens (Anti-Replay Attack)
+// ============================================
+
+model UsedToken {
+  id          String            @id @default(cuid())
+
+  session     AttendanceSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  sessionId   String
+
+  nonce       String            // El nonce único del token
+  usedAt      DateTime          @default(now())
+  usedBy      String            // studentId que lo usó
+
+  @@unique([sessionId, nonce])  // Un nonce solo puede usarse una vez por sesión
+  @@index([sessionId, nonce])
+}
+
+// ============================================
+// SECURITY: Device Fingerprints
+// ============================================
+
+model DeviceFingerprint {
+  id              String   @id @default(cuid())
+
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId          String
+
+  fingerprint     String   // Hash único del dispositivo
+  deviceName      String?  // Nombre amigable (ej: "iPhone de Juan")
+  lastUsed        DateTime @default(now())
+  isBlocked       Boolean  @default(false)
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([userId, fingerprint])
+  @@index([fingerprint])
+}
+
+// ============================================
+// CONFIGURATION: School Settings
+// ============================================
+
+model SchoolConfig {
+  id              String   @id @default(cuid())
+
+  name            String   @default("Mi Escuela")
+
+  // Restricción de IP
+  allowedIPs      String[] // Lista de IPs permitidas (CIDR notation)
+  enforceIPCheck  Boolean  @default(false)
+
+  // Configuración de tardanza
+  lateThresholdMinutes Int @default(15) // Después de X minutos = tardanza
+
+  // Configuración de seguridad
+  maxDevicesPerStudent Int @default(2)  // Máximo de dispositivos por alumno
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
