@@ -5,9 +5,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { AuthUser, UserRole } from '../types';
-
-// API Base URL
-const API_URL = import.meta.env.VITE_API_URL || (import.meta.env.PROD ? '' : 'http://localhost:3001');
+import { API_URL } from '../lib/api';
 
 // Mock users para desarrollo sin backend
 const MOCK_USERS: AuthUser[] = [
