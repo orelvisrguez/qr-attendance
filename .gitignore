@@ -1,32 +1,30 @@
-# Logs
-logs
+# Archivos de sistema
+.DS_Store
+Thumbs.db
+
+# Configuración de editores
+.vscode/
+.idea/
+
+# Dependencias
+node_modules/
+venv/
+*.egg-info/
+
+# Archivos de compilación
+dist/
+build/
+out/
+
+# Logs y temporales
 *.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-lerna-debug.log*
+*.tmp
+*.swp
 
-node_modules
-dist
-dist-ssr
-*.local
-
-# Environment variables (CRITICAL - contains secrets)
+# Archivos de entorno
 .env
 .env.local
 .env.*.local
 
-# Lock files (optional - keep if using specific package manager)
-pnpm-lock.yaml
-
-# Editor directories and files
-.vscode/*
-!.vscode/extensions.json
-.idea
-.DS_Store
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.sw?
+# Cobertura de tests
+coverage/

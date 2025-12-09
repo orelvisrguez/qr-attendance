@@ -23,6 +23,10 @@
     {
       "source": "/api/settings/:path*",
       "destination": "/api/settings"
+    },
+    {
+      "source": "/((?!api/).*)",
+      "destination": "/index.html"
     }
   ],
   "headers": [
