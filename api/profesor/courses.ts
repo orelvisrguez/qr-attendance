@@ -17,19 +17,6 @@ function setCorsHeaders(res: VercelResponse) {
   );
 }
 
-// Mock data para cuando no hay DB configurada
-const MOCK_COURSES = [
-  { id: 'course-1', name: '3ro A', grade: '3ro Secundaria', section: 'A', year: 2024, studentCount: 32 },
-  { id: 'course-2', name: '3ro B', grade: '3ro Secundaria', section: 'B', year: 2024, studentCount: 30 },
-  { id: 'course-3', name: '4to A', grade: '4to Secundaria', section: 'A', year: 2024, studentCount: 28 },
-];
-
-const MOCK_SUBJECTS = [
-  { id: 'subject-1', name: 'Matemáticas', code: 'MAT-301', courseId: 'course-1' },
-  { id: 'subject-2', name: 'Física', code: 'FIS-301', courseId: 'course-1' },
-  { id: 'subject-3', name: 'Química', code: 'QUI-301', courseId: 'course-2' },
-];
-
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   setCorsHeaders(res);
 
@@ -39,6 +26,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   if (req.method !== 'GET') {
     return res.status(405).json({ error: 'Método no permitido' });
+  }
+
+  // Verificar que Supabase está configurado
+  if (!isSupabaseConfigured) {
+    return res.status(503).json({
+      success: false,
+      error: 'Base de datos no configurada. Por favor configure las variables de entorno.',
+    });
   }
 
   try {
@@ -51,91 +46,103 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
 
-    let courses: any[] = [];
-    let subjects: any[] = [];
-    let isFromDatabase = false;
+    // Obtener cursos asignados al profesor
+    const { data: courseAssignments, error: courseError } = await supabaseAdmin
+      .from('course_profesors')
+      .select(`
+        course:courses (
+          id,
+          name,
+          grade,
+          section,
+          year,
+          is_active
+        )
+      `)
+      .eq('profesor_id', profesorId);
 
-    // Solo intentar usar Supabase si está configurado
-    if (isSupabaseConfigured) {
-      try {
-        // Obtener cursos asignados al profesor
-        const { data: courseAssignments, error: courseError } = await supabaseAdmin
-          .from('course_profesors')
-          .select(`
-            course:courses (
-              id,
-              name,
-              grade,
-              section,
-              year,
-              is_active
-            )
-          `)
-          .eq('profesor_id', profesorId);
+    if (courseError) {
+      console.error('Error obteniendo cursos del profesor:', courseError);
+      return res.status(500).json({
+        success: false,
+        error: 'Error al obtener cursos',
+      });
+    }
 
-        if (!courseError && courseAssignments && courseAssignments.length > 0) {
-          isFromDatabase = true;
+    if (!courseAssignments || courseAssignments.length === 0) {
+      return res.status(200).json({
+        success: true,
+        data: {
+          courses: [],
+          subjects: [],
+        },
+        message: 'No hay cursos asignados a este profesor',
+      });
+    }
 
-          // Extraer cursos únicos
-          const courseIds: string[] = [];
-          courses = courseAssignments
-            .map((ca: any) => ca.course)
-            .filter((c: any) => c && c.is_active)
-            .map((c: any) => {
-              courseIds.push(c.id);
-              return {
-                id: c.id,
-                name: c.name,
-                grade: c.grade,
-                section: c.section,
-                year: c.year,
-              };
-            });
+    // Extraer cursos únicos y activos
+    const courseIds: string[] = [];
+    const courses = courseAssignments
+      .map((ca: { course: { id: string; name: string; grade: string; section: string; year: number; is_active: boolean } }) => ca.course)
+      .filter((c) => c && c.is_active)
+      .map((c) => {
+        courseIds.push(c.id);
+        return {
+          id: c.id,
+          name: c.name,
+          grade: c.grade,
+          section: c.section,
+          year: c.year,
+        };
+      });
 
-          // Obtener materias de esos cursos
-          if (courseIds.length > 0) {
-            const { data: subjectData } = await supabaseAdmin
-              .from('subjects')
-              .select('id, name, code, course_id')
-              .in('course_id', courseIds);
+    // Eliminar duplicados
+    const uniqueCourses = courses.filter((course, index, self) =>
+      index === self.findIndex((c) => c.id === course.id)
+    );
 
-            if (subjectData) {
-              subjects = subjectData.map((s: any) => ({
-                id: s.id,
-                name: s.name,
-                code: s.code,
-                courseId: s.course_id,
-              }));
-            }
-          }
+    // Obtener materias de esos cursos
+    let subjects: { id: string; name: string; code: string; courseId: string }[] = [];
 
-          // Obtener conteo de estudiantes por curso
-          for (const course of courses) {
-            const { count } = await supabaseAdmin
-              .from('course_students')
-              .select('*', { count: 'exact', head: true })
-              .eq('course_id', course.id);
+    if (courseIds.length > 0) {
+      const uniqueCourseIds = [...new Set(courseIds)];
+      const { data: subjectData, error: subjectError } = await supabaseAdmin
+        .from('subjects')
+        .select('id, name, code, course_id')
+        .in('course_id', uniqueCourseIds);
 
-            course.studentCount = count || 0;
-          }
-        }
-      } catch (dbError) {
-        console.log('Database not available, using mock data');
+      if (subjectError) {
+        console.error('Error obteniendo materias:', subjectError);
+      } else if (subjectData) {
+        subjects = subjectData.map((s) => ({
+          id: s.id,
+          name: s.name,
+          code: s.code,
+          courseId: s.course_id,
+        }));
       }
     }
 
-    // Fallback a mock data
-    if (!isFromDatabase || courses.length === 0) {
-      courses = MOCK_COURSES;
-      subjects = MOCK_SUBJECTS;
-    }
+    // Obtener conteo de estudiantes por curso
+    const coursesWithStudentCount = await Promise.all(
+      uniqueCourses.map(async (course) => {
+        const { count } = await supabaseAdmin
+          .from('course_students')
+          .select('*', { count: 'exact', head: true })
+          .eq('course_id', course.id);
+
+        return {
+          ...course,
+          studentCount: count || 0,
+        };
+      })
+    );
 
     return res.status(200).json({
       success: true,
       data: {
-        courses,
+        courses: coursesWithStudentCount,
         subjects,
-        isFromDatabase,
       },
     });
   } catch (error) {

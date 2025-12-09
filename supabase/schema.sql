@@ -195,6 +195,20 @@ CREATE TABLE IF NOT EXISTS school_config (
 );
 
 -- ============================================
+-- SETTINGS TABLE (Configuraciones generales)
+-- ============================================
+
+CREATE TABLE IF NOT EXISTS settings (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  key VARCHAR(100) UNIQUE NOT NULL,
+  value JSONB NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX idx_settings_key ON settings(key);
+
+-- ============================================
 -- TRIGGERS PARA UPDATED_AT
 -- ============================================
 
@@ -222,6 +236,9 @@ CREATE TRIGGER update_sessions_updated_at BEFORE UPDATE ON attendance_sessions
 CREATE TRIGGER update_attendances_updated_at BEFORE UPDATE ON attendances
   FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
+CREATE TRIGGER update_settings_updated_at BEFORE UPDATE ON settings
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
 -- ============================================
 -- DATOS DE EJEMPLO (Demo)
 -- ============================================
@@ -238,7 +255,7 @@ ON CONFLICT (email) DO NOTHING;
 
 -- Insertar curso de ejemplo
 INSERT INTO courses (id, name, grade, section, year) VALUES
-  ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', '3ro A', '3ro Secundaria', 'A', 2024)
+  ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', '3ro A', '3ro Secundaria', 'A', 2025)
 ON CONFLICT (grade, section, year) DO NOTHING;
 
 -- Insertar materia de ejemplo
