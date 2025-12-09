@@ -6,8 +6,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { UserModal } from './UserModal';
 import { DeleteConfirmModal } from './DeleteConfirmModal';
-
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+import { API_URL } from '../../lib/api';
 
 interface User {
   id: string;
