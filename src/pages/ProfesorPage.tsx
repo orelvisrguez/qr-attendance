@@ -1,10 +1,11 @@
 // ============================================
-// PROFESOR PAGE - Dashboard Profesional del Profesor
+// PROFESOR PAGE - Dashboard con Datos Reales
 // ============================================
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { QRProjector } from '../components/qr/QRProjector';
 import { useAuthStore } from '../store/auth-store';
+import { API_URL } from '../lib/api';
 import {
   Users,
   BookOpen,
@@ -19,10 +20,13 @@ import {
   Play,
   History,
   LogOut,
-  User,
   GraduationCap,
   TrendingUp,
   FileText,
+  Loader2,
+  RefreshCw,
+  Pause,
+  Square,
 } from 'lucide-react';
 
 // ============================================
@@ -34,97 +38,85 @@ interface Course {
   name: string;
   grade: string;
   section: string;
+  year?: number;
   studentCount: number;
-  color: string;
 }
 
 interface Subject {
   id: string;
   name: string;
   code: string;
-  icon: string;
+  courseId: string;
 }
 
-interface AttendanceSession {
+interface ActiveSession {
   id: string;
   courseId: string;
   subjectId: string;
-  date: string;
-  startTime: string;
-  endTime: string | null;
-  presentCount: number;
-  absentCount: number;
-  lateCount: number;
-  status: 'active' | 'completed';
+  courseName: string;
+  subjectName: string;
+  secret: string;
+  qrRotationSeconds: number;
+  startedAt: string;
+  status: 'ACTIVE' | 'PAUSED' | 'CLOSED';
 }
 
-interface Student {
+interface SessionHistory {
   id: string;
-  name: string;
-  avatar?: string;
-  status: 'present' | 'absent' | 'late' | 'pending';
-  time?: string;
+  courseName: string;
+  subjectName: string;
+  status: string;
+  startedAt: string;
+  endedAt: string | null;
+  presentCount?: number;
+  lateCount?: number;
+  absentCount?: number;
 }
 
 // ============================================
-// MOCK DATA
+// HELPER FUNCTIONS
 // ============================================
 
-const mockCourses: Course[] = [
-  { id: '1', name: '3ro A', grade: '3ro Secundaria', section: 'A', studentCount: 32, color: 'from-blue-500 to-blue-600' },
-  { id: '2', name: '3ro B', grade: '3ro Secundaria', section: 'B', studentCount: 30, color: 'from-purple-500 to-purple-600' },
-  { id: '3', name: '4to A', grade: '4to Secundaria', section: 'A', studentCount: 28, color: 'from-emerald-500 to-emerald-600' },
-  { id: '4', name: '4to B', grade: '4to Secundaria', section: 'B', studentCount: 31, color: 'from-orange-500 to-orange-600' },
-  { id: '5', name: '5to A', grade: '5to Secundaria', section: 'A', studentCount: 25, color: 'from-rose-500 to-rose-600' },
-];
+const getGradientColor = (index: number): string => {
+  const colors = [
+    'from-blue-500 to-blue-600',
+    'from-purple-500 to-purple-600',
+    'from-emerald-500 to-emerald-600',
+    'from-orange-500 to-orange-600',
+    'from-rose-500 to-rose-600',
+    'from-cyan-500 to-cyan-600',
+    'from-amber-500 to-amber-600',
+    'from-indigo-500 to-indigo-600',
+  ];
+  return colors[index % colors.length];
+};
 
-const mockSubjects: Subject[] = [
-  { id: '1', name: 'Matemáticas', code: 'MAT-301', icon: '📐' },
-  { id: '2', name: 'Física', code: 'FIS-301', icon: '⚡' },
-  { id: '3', name: 'Química', code: 'QUI-301', icon: '🧪' },
-  { id: '4', name: 'Álgebra', code: 'ALG-401', icon: '🔢' },
-];
-
-const mockTodaySessions: AttendanceSession[] = [
-  {
-    id: 's1',
-    courseId: '1',
-    subjectId: '1',
-    date: new Date().toISOString().split('T')[0],
-    startTime: '08:00',
-    endTime: '08:45',
-    presentCount: 30,
-    absentCount: 2,
-    lateCount: 0,
-    status: 'completed',
-  },
-  {
-    id: 's2',
-    courseId: '2',
-    subjectId: '2',
-    date: new Date().toISOString().split('T')[0],
-    startTime: '09:00',
-    endTime: '09:45',
-    presentCount: 28,
-    absentCount: 1,
-    lateCount: 1,
-    status: 'completed',
-  },
-];
-
-const mockRecentStudents: Student[] = [
-  { id: '1', name: 'Ana García López', status: 'present', time: '08:02' },
-  { id: '2', name: 'Carlos Mendoza', status: 'present', time: '08:03' },
-  { id: '3', name: 'Diana Flores', status: 'late', time: '08:12' },
-  { id: '4', name: 'Eduardo Sánchez', status: 'present', time: '08:01' },
-  { id: '5', name: 'Fernanda Ruiz', status: 'absent' },
-];
+const getSubjectIcon = (name: string): string => {
+  const icons: Record<string, string> = {
+    'matemáticas': '📐',
+    'física': '⚡',
+    'química': '🧪',
+    'historia': '📜',
+    'lengua': '📖',
+    'inglés': '🇬🇧',
+    'biología': '🧬',
+    'geografía': '🌍',
+    'arte': '🎨',
+    'música': '🎵',
+    'educación física': '⚽',
+    'informática': '💻',
+  };
+  const key = name.toLowerCase();
+  for (const [k, v] of Object.entries(icons)) {
+    if (key.includes(k)) return v;
+  }
+  return '📚';
+};
 
 // ============================================
 // COMPONENTS
 // ============================================
 
-// Stat Card Component
 const StatCard: React.FC<{
   icon: React.ReactNode;
   label: string;
@@ -146,12 +138,12 @@ const StatCard: React.FC<{
   </div>
 );
 
-// Course Card Component
 const CourseCard: React.FC<{
   course: Course;
+  colorIndex: number;
   onSelect: () => void;
   isSelected: boolean;
-}> = ({ course, onSelect, isSelected }) => (
+}> = ({ course, colorIndex, onSelect, isSelected }) => (
   <button
     onClick={onSelect}
     className={`w-full text-left p-4 rounded-xl border-2 transition-all ${
@@ -161,7 +153,7 @@ const CourseCard: React.FC<{
     }`}
   >
     <div className="flex items-center gap-3">
-      <div className={`w-12 h-12 rounded-xl bg-gradient-to-br ${course.color} flex items-center justify-center text-white font-bold text-lg shadow-sm`}>
+      <div className={`w-12 h-12 rounded-xl bg-gradient-to-br ${getGradientColor(colorIndex)} flex items-center justify-center text-white font-bold text-lg shadow-sm`}>
         {course.section}
       </div>
       <div className="flex-1">
@@ -176,7 +168,6 @@ const CourseCard: React.FC<{
   </button>
 );
 
-// Subject Button Component
 const SubjectButton: React.FC<{
   subject: Subject;
   onSelect: () => void;
@@ -190,81 +181,48 @@ const SubjectButton: React.FC<{
         : 'border-gray-200 bg-white hover:border-gray-300 hover:shadow-sm'
     }`}
   >
-    <span className="text-2xl block mb-2">{subject.icon}</span>
+    <span className="text-2xl block mb-2">{getSubjectIcon(subject.name)}</span>
     <h4 className="font-medium text-gray-900 text-sm">{subject.name}</h4>
     <p className="text-xs text-gray-400">{subject.code}</p>
   </button>
 );
 
-// Session History Item
-const SessionItem: React.FC<{ session: AttendanceSession; courses: Course[]; subjects: Subject[] }> = ({
-  session,
-  courses,
-  subjects,
-}) => {
-  const course = courses.find((c) => c.id === session.courseId);
-  const subject = subjects.find((s) => s.id === session.subjectId);
-  const total = session.presentCount + session.absentCount + session.lateCount;
-  const attendanceRate = Math.round((session.presentCount / total) * 100);
+const SessionHistoryItem: React.FC<{ session: SessionHistory }> = ({ session }) => {
+  const startDate = new Date(session.startedAt);
+  const statusColors = {
+    ACTIVE: 'bg-green-100 text-green-700',
+    PAUSED: 'bg-yellow-100 text-yellow-700',
+    CLOSED: 'bg-gray-100 text-gray-700',
+  };
 
   return (
-    <div className="flex items-center gap-4 p-4 bg-gray-50 rounded-xl">
-      <div className={`w-12 h-12 rounded-xl bg-gradient-to-br ${course?.color || 'from-gray-400 to-gray-500'} flex items-center justify-center text-white font-bold shadow-sm`}>
-        {course?.section || '?'}
+    <div className="flex items-center gap-4 p-4 bg-gray-50 rounded-xl hover:bg-gray-100 transition-colors">
+      <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white shadow-sm">
+        <BookOpen size={20} />
       </div>
       <div className="flex-1">
         <div className="flex items-center gap-2">
-          <h4 className="font-semibold text-gray-900">{subject?.name || 'Materia'}</h4>
-          <span className="text-xs px-2 py-0.5 bg-green-100 text-green-700 rounded-full">Completada</span>
+          <h4 className="font-semibold text-gray-900">{session.subjectName}</h4>
+          <span className={`text-xs px-2 py-0.5 rounded-full ${statusColors[session.status as keyof typeof statusColors] || 'bg-gray-100 text-gray-700'}`}>
+            {session.status === 'ACTIVE' ? 'Activa' : session.status === 'PAUSED' ? 'Pausada' : 'Finalizada'}
+          </span>
         </div>
         <p className="text-sm text-gray-500">
-          {course?.name} • {session.startTime} - {session.endTime}
+          {session.courseName} • {startDate.toLocaleDateString()} {startDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
         </p>
       </div>
-      <div className="text-right">
-        <p className="text-lg font-bold text-gray-900">{attendanceRate}%</p>
-        <p className="text-xs text-gray-400">asistencia</p>
-      </div>
-      <div className="flex gap-3 text-sm">
-        <span className="flex items-center gap-1 text-green-600">
-          <CheckCircle2 size={16} /> {session.presentCount}
-        </span>
-        <span className="flex items-center gap-1 text-amber-600">
-          <AlertCircle size={16} /> {session.lateCount}
-        </span>
-        <span className="flex items-center gap-1 text-red-600">
-          <XCircle size={16} /> {session.absentCount}
-        </span>
-      </div>
-    </div>
-  );
-};
-
-// Student List Item
-const StudentItem: React.FC<{ student: Student }> = ({ student }) => {
-  const statusConfig = {
-    present: { icon: CheckCircle2, color: 'text-green-600', bg: 'bg-green-100', label: 'Presente' },
-    late: { icon: AlertCircle, color: 'text-amber-600', bg: 'bg-amber-100', label: 'Tardanza' },
-    absent: { icon: XCircle, color: 'text-red-600', bg: 'bg-red-100', label: 'Ausente' },
-    pending: { icon: Clock, color: 'text-gray-400', bg: 'bg-gray-100', label: 'Pendiente' },
-  };
-
-  const config = statusConfig[student.status];
-  const Icon = config.icon;
-
-  return (
-    <div className="flex items-center gap-3 py-2">
-      <div className="w-8 h-8 rounded-full bg-gradient-to-br from-indigo-400 to-purple-500 flex items-center justify-center text-white text-sm font-medium">
-        {student.name.charAt(0)}
-      </div>
-      <div className="flex-1">
-        <p className="text-sm font-medium text-gray-900">{student.name}</p>
-        {student.time && <p className="text-xs text-gray-400">{student.time}</p>}
-      </div>
-      <span className={`flex items-center gap-1 text-xs px-2 py-1 rounded-full ${config.bg} ${config.color}`}>
-        <Icon size={12} />
-        {config.label}
-      </span>
+      {session.presentCount !== undefined && (
+        <div className="flex gap-3 text-sm">
+          <span className="flex items-center gap-1 text-green-600">
+            <CheckCircle2 size={16} /> {session.presentCount}
+          </span>
+          {session.lateCount !== undefined && session.lateCount > 0 && (
+            <span className="flex items-center gap-1 text-amber-600">
+              <AlertCircle size={16} /> {session.lateCount}
+            </span>
+          )}
+        </div>
+      )}
     </div>
   );
 };
@@ -278,57 +236,250 @@ type ViewMode = 'dashboard' | 'start-session' | 'history' | 'reports';
 export const ProfesorPage: React.FC = () => {
   const { user, logout } = useAuthStore();
   const [viewMode, setViewMode] = useState<ViewMode>('dashboard');
+
+  // Data states
+  const [courses, setCourses] = useState<Course[]>([]);
+  const [subjects, setSubjects] = useState<Subject[]>([]);
+  const [sessionHistory, setSessionHistory] = useState<SessionHistory[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [isFromDatabase, setIsFromDatabase] = useState(false);
+
+  // Session states
   const [selectedCourse, setSelectedCourse] = useState<string>('');
   const [selectedSubject, setSelectedSubject] = useState<string>('');
-  const [activeSession, setActiveSession] = useState<string | null>(null);
+  const [activeSession, setActiveSession] = useState<ActiveSession | null>(null);
+  const [isCreatingSession, setIsCreatingSession] = useState(false);
 
-  // Stats calculations
-  const stats = useMemo(() => {
-    const totalStudents = mockCourses.reduce((acc, c) => acc + c.studentCount, 0);
-    const todayPresent = mockTodaySessions.reduce((acc, s) => acc + s.presentCount, 0);
-    const todayTotal = mockTodaySessions.reduce((acc, s) => acc + s.presentCount + s.absentCount + s.lateCount, 0);
-    const todayRate = todayTotal > 0 ? Math.round((todayPresent / todayTotal) * 100) : 0;
+  // Filtered subjects based on selected course
+  const filteredSubjects = selectedCourse
+    ? subjects.filter(s => s.courseId === selectedCourse)
+    : subjects;
 
-    return {
-      totalCourses: mockCourses.length,
-      totalStudents,
-      todaySessions: mockTodaySessions.length,
-      todayRate,
-    };
-  }, []);
+  // ============================================
+  // DATA FETCHING
+  // ============================================
 
-  // Handle starting a new session
-  const handleStartSession = () => {
-    if (!selectedCourse || !selectedSubject) return;
-    setActiveSession(`session-${Date.now()}`);
+  const fetchProfesorData = useCallback(async () => {
+    if (!user?.id) return;
+
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      // Fetch courses and subjects
+      const coursesRes = await fetch(`${API_URL}/api/profesor/courses?profesorId=${user.id}`);
+      const coursesData = await coursesRes.json();
+
+      if (coursesData.success) {
+        setCourses(coursesData.data.courses);
+        setSubjects(coursesData.data.subjects);
+        setIsFromDatabase(coursesData.data.isFromDatabase);
+      }
+
+      // Fetch session history
+      const sessionsRes = await fetch(`${API_URL}/api/sessions?profesorId=${user.id}`);
+      const sessionsData = await sessionsRes.json();
+
+      if (sessionsData.success) {
+        setSessionHistory(sessionsData.data);
+      }
+    } catch (err) {
+      console.error('Error fetching data:', err);
+      setError('Error cargando datos. Usando datos de demostración.');
+
+      // Use mock data on error
+      setCourses([
+        { id: 'mock-1', name: '3ro A', grade: '3ro Secundaria', section: 'A', studentCount: 32 },
+        { id: 'mock-2', name: '3ro B', grade: '3ro Secundaria', section: 'B', studentCount: 30 },
+        { id: 'mock-3', name: '4to A', grade: '4to Secundaria', section: 'A', studentCount: 28 },
+      ]);
+      setSubjects([
+        { id: 'subj-1', name: 'Matemáticas', code: 'MAT-301', courseId: 'mock-1' },
+        { id: 'subj-2', name: 'Física', code: 'FIS-301', courseId: 'mock-1' },
+        { id: 'subj-3', name: 'Química', code: 'QUI-301', courseId: 'mock-2' },
+      ]);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [user?.id]);
+
+  useEffect(() => {
+    fetchProfesorData();
+  }, [fetchProfesorData]);
+
+  // ============================================
+  // SESSION MANAGEMENT
+  // ============================================
+
+  const handleStartSession = async () => {
+    if (!selectedCourse || !selectedSubject || !user?.id) return;
+
+    setIsCreatingSession(true);
+    setError(null);
+
+    try {
+      const response = await fetch(`${API_URL}/api/sessions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          courseId: selectedCourse,
+          subjectId: selectedSubject,
+          profesorId: user.id,
+          qrRotationSeconds: 7,
+          tokenValidSeconds: 10,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Error al crear la sesión');
+      }
+
+      const course = courses.find(c => c.id === selectedCourse);
+      const subject = subjects.find(s => s.id === selectedSubject);
+
+      setActiveSession({
+        id: data.data.id,
+        courseId: selectedCourse,
+        subjectId: selectedSubject,
+        courseName: course?.name || data.data.courseName || 'Curso',
+        subjectName: subject?.name || data.data.subjectName || 'Materia',
+        secret: data.data.secret,
+        qrRotationSeconds: data.data.qrRotationSeconds || 7,
+        startedAt: data.data.startedAt,
+        status: 'ACTIVE',
+      });
+    } catch (err: any) {
+      console.error('Error creating session:', err);
+      setError(err.message || 'Error al crear la sesión');
+    } finally {
+      setIsCreatingSession(false);
+    }
   };
 
-  // If there's an active session, show the QR Projector
-  if (activeSession) {
-    const course = mockCourses.find((c) => c.id === selectedCourse);
-    const subject = mockSubjects.find((s) => s.id === selectedSubject);
+  const handleEndSession = async () => {
+    if (!activeSession) return;
 
+    try {
+      await fetch(`${API_URL}/api/sessions`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sessionId: activeSession.id,
+          status: 'CLOSED',
+        }),
+      });
+
+      setActiveSession(null);
+      setViewMode('dashboard');
+      fetchProfesorData(); // Refresh data
+    } catch (err) {
+      console.error('Error ending session:', err);
+    }
+  };
+
+  const handlePauseSession = async () => {
+    if (!activeSession) return;
+
+    const newStatus = activeSession.status === 'PAUSED' ? 'ACTIVE' : 'PAUSED';
+
+    try {
+      await fetch(`${API_URL}/api/sessions`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sessionId: activeSession.id,
+          status: newStatus,
+        }),
+      });
+
+      setActiveSession(prev => prev ? { ...prev, status: newStatus } : null);
+    } catch (err) {
+      console.error('Error pausing session:', err);
+    }
+  };
+
+  // ============================================
+  // STATS
+  // ============================================
+
+  const stats = {
+    totalCourses: courses.length,
+    totalStudents: courses.reduce((acc, c) => acc + (c.studentCount || 0), 0),
+    todaySessions: sessionHistory.filter(s => {
+      const today = new Date().toDateString();
+      return new Date(s.startedAt).toDateString() === today;
+    }).length,
+    activeSessions: sessionHistory.filter(s => s.status === 'ACTIVE').length,
+  };
+
+  // ============================================
+  // ACTIVE SESSION VIEW
+  // ============================================
+
+  if (activeSession) {
     return (
       <div className="relative">
         <QRProjector
-          sessionId={activeSession}
-          courseName={course?.name || 'Curso'}
-          subjectName={subject?.name || 'Materia'}
+          sessionId={activeSession.id}
+          sessionSecret={activeSession.secret}
+          courseName={activeSession.courseName}
+          subjectName={activeSession.subjectName}
           profesorName={`${user?.firstName} ${user?.lastName}`}
+          qrRotationSeconds={activeSession.qrRotationSeconds}
+          isPaused={activeSession.status === 'PAUSED'}
         />
-        <button
-          onClick={() => {
-            setActiveSession(null);
-            setViewMode('dashboard');
-          }}
-          className="fixed bottom-6 right-6 px-6 py-3 bg-red-500 hover:bg-red-600 text-white rounded-xl shadow-lg flex items-center gap-2 font-medium transition-colors"
-        >
-          <XCircle size={20} />
-          Finalizar Sesión
-        </button>
+
+        {/* Control Buttons */}
+        <div className="fixed bottom-6 right-6 flex gap-3">
+          <button
+            onClick={handlePauseSession}
+            className={`px-5 py-3 ${activeSession.status === 'PAUSED' ? 'bg-green-500 hover:bg-green-600' : 'bg-yellow-500 hover:bg-yellow-600'} text-white rounded-xl shadow-lg flex items-center gap-2 font-medium transition-colors`}
+          >
+            {activeSession.status === 'PAUSED' ? (
+              <>
+                <Play size={20} />
+                Reanudar
+              </>
+            ) : (
+              <>
+                <Pause size={20} />
+                Pausar
+              </>
+            )}
+          </button>
+          <button
+            onClick={handleEndSession}
+            className="px-5 py-3 bg-red-500 hover:bg-red-600 text-white rounded-xl shadow-lg flex items-center gap-2 font-medium transition-colors"
+          >
+            <Square size={20} />
+            Finalizar Sesión
+          </button>
+        </div>
       </div>
     );
   }
+
+  // ============================================
+  // LOADING STATE
+  // ============================================
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="text-center">
+          <Loader2 className="w-12 h-12 animate-spin text-indigo-600 mx-auto mb-4" />
+          <p className="text-gray-600">Cargando datos...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // ============================================
+  // MAIN RENDER
+  // ============================================
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -344,11 +495,19 @@ export const ProfesorPage: React.FC = () => {
                 <h1 className="text-xl font-bold text-gray-900">Panel del Profesor</h1>
                 <p className="text-sm text-gray-500">
                   Bienvenido, {user?.firstName} {user?.lastName}
+                  {!isFromDatabase && <span className="ml-2 text-xs text-amber-600">(Demo)</span>}
                 </p>
               </div>
             </div>
 
             <div className="flex items-center gap-3">
+              <button
+                onClick={fetchProfesorData}
+                className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-xl transition-colors"
+                title="Actualizar datos"
+              >
+                <RefreshCw size={20} />
+              </button>
               <button
                 onClick={() => setViewMode('start-session')}
                 className="px-4 py-2 bg-gradient-to-r from-indigo-500 to-purple-600 text-white rounded-xl font-medium hover:from-indigo-600 hover:to-purple-700 transition-all shadow-md hover:shadow-lg flex items-center gap-2"
@@ -398,6 +557,16 @@ export const ProfesorPage: React.FC = () => {
         </div>
       </nav>
 
+      {/* Error Alert */}
+      {error && (
+        <div className="max-w-7xl mx-auto px-6 mt-4">
+          <div className="bg-amber-50 border border-amber-200 text-amber-800 px-4 py-3 rounded-lg flex items-center gap-2">
+            <AlertCircle size={20} />
+            {error}
+          </div>
+        </div>
+      )}
+
       {/* Main Content */}
       <main className="max-w-7xl mx-auto px-6 py-8">
         {/* Dashboard View */}
@@ -423,95 +592,72 @@ export const ProfesorPage: React.FC = () => {
                 icon={<Calendar className="text-white" size={24} />}
                 label="Sesiones Hoy"
                 value={stats.todaySessions}
-                subtext="clases completadas"
+                subtext="clases registradas"
                 color="from-purple-500 to-purple-600"
               />
               <StatCard
                 icon={<TrendingUp className="text-white" size={24} />}
-                label="Asistencia Hoy"
-                value={`${stats.todayRate}%`}
-                subtext="promedio del día"
+                label="Sesiones Activas"
+                value={stats.activeSessions}
+                subtext="en este momento"
                 color="from-amber-500 to-amber-600"
               />
             </div>
 
-            {/* Two Column Layout */}
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-              {/* Quick Start */}
-              <div className="lg:col-span-2 bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
-                <div className="flex items-center justify-between mb-6">
-                  <h2 className="text-lg font-semibold text-gray-900">Inicio Rápido</h2>
-                  <button
-                    onClick={() => setViewMode('start-session')}
-                    className="text-indigo-600 hover:text-indigo-700 text-sm font-medium flex items-center gap-1"
-                  >
-                    Ver todos <ChevronRight size={16} />
-                  </button>
-                </div>
-
-                <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-                  {mockCourses.slice(0, 6).map((course) => (
-                    <button
-                      key={course.id}
-                      onClick={() => {
-                        setSelectedCourse(course.id);
-                        setViewMode('start-session');
-                      }}
-                      className="p-4 rounded-xl border border-gray-200 hover:border-indigo-300 hover:bg-indigo-50 transition-all text-left group"
-                    >
-                      <div className={`w-10 h-10 rounded-lg bg-gradient-to-br ${course.color} flex items-center justify-center text-white font-bold mb-3 shadow-sm group-hover:scale-110 transition-transform`}>
-                        {course.section}
-                      </div>
-                      <h4 className="font-medium text-gray-900">{course.name}</h4>
-                      <p className="text-xs text-gray-500">{course.studentCount} estudiantes</p>
-                    </button>
-                  ))}
-                </div>
+            {/* Quick Start */}
+            <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
+              <div className="flex items-center justify-between mb-6">
+                <h2 className="text-lg font-semibold text-gray-900">Inicio Rápido</h2>
+                <button
+                  onClick={() => setViewMode('start-session')}
+                  className="text-indigo-600 hover:text-indigo-700 text-sm font-medium flex items-center gap-1"
+                >
+                  Ver todos <ChevronRight size={16} />
+                </button>
               </div>
 
-              {/* Recent Activity */}
-              <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
-                <h2 className="text-lg font-semibold text-gray-900 mb-6">Última Sesión</h2>
-
-                {mockRecentStudents.length > 0 ? (
-                  <div className="space-y-1 divide-y divide-gray-100">
-                    {mockRecentStudents.map((student) => (
-                      <StudentItem key={student.id} student={student} />
-                    ))}
-                  </div>
-                ) : (
-                  <div className="text-center py-8 text-gray-400">
-                    <Clock size={48} className="mx-auto mb-3 opacity-50" />
-                    <p>Sin actividad reciente</p>
-                  </div>
-                )}
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                {courses.slice(0, 8).map((course, idx) => (
+                  <button
+                    key={course.id}
+                    onClick={() => {
+                      setSelectedCourse(course.id);
+                      setViewMode('start-session');
+                    }}
+                    className="p-4 rounded-xl border border-gray-200 hover:border-indigo-300 hover:bg-indigo-50 transition-all text-left group"
+                  >
+                    <div className={`w-10 h-10 rounded-lg bg-gradient-to-br ${getGradientColor(idx)} flex items-center justify-center text-white font-bold mb-3 shadow-sm group-hover:scale-110 transition-transform`}>
+                      {course.section}
+                    </div>
+                    <h4 className="font-medium text-gray-900">{course.name}</h4>
+                    <p className="text-xs text-gray-500">{course.studentCount} estudiantes</p>
+                  </button>
+                ))}
               </div>
             </div>
 
-            {/* Today's Sessions */}
+            {/* Recent Sessions */}
             <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
               <div className="flex items-center justify-between mb-6">
-                <h2 className="text-lg font-semibold text-gray-900">Sesiones de Hoy</h2>
-                <span className="text-sm text-gray-500">
-                  {new Date().toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long' })}
-                </span>
+                <h2 className="text-lg font-semibold text-gray-900">Sesiones Recientes</h2>
+                <button
+                  onClick={() => setViewMode('history')}
+                  className="text-indigo-600 hover:text-indigo-700 text-sm font-medium flex items-center gap-1"
+                >
+                  Ver historial <ChevronRight size={16} />
+                </button>
               </div>
 
-              {mockTodaySessions.length > 0 ? (
+              {sessionHistory.length > 0 ? (
                 <div className="space-y-4">
-                  {mockTodaySessions.map((session) => (
-                    <SessionItem
-                      key={session.id}
-                      session={session}
-                      courses={mockCourses}
-                      subjects={mockSubjects}
-                    />
+                  {sessionHistory.slice(0, 5).map((session) => (
+                    <SessionHistoryItem key={session.id} session={session} />
                   ))}
                 </div>
               ) : (
                 <div className="text-center py-12 text-gray-400">
                   <Calendar size={48} className="mx-auto mb-3 opacity-50" />
-                  <p>No hay sesiones registradas hoy</p>
+                  <p>No hay sesiones registradas</p>
                   <button
                     onClick={() => setViewMode('start-session')}
                     className="mt-4 px-4 py-2 bg-indigo-100 text-indigo-600 rounded-lg font-medium hover:bg-indigo-200 transition-colors"
@@ -543,11 +689,15 @@ export const ProfesorPage: React.FC = () => {
                   Selecciona el Curso
                 </h3>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  {mockCourses.map((course) => (
+                  {courses.map((course, idx) => (
                     <CourseCard
                       key={course.id}
                       course={course}
-                      onSelect={() => setSelectedCourse(course.id)}
+                      colorIndex={idx}
+                      onSelect={() => {
+                        setSelectedCourse(course.id);
+                        setSelectedSubject(''); // Reset subject when course changes
+                      }}
                       isSelected={selectedCourse === course.id}
                     />
                   ))}
@@ -560,26 +710,42 @@ export const ProfesorPage: React.FC = () => {
                   <span className="w-6 h-6 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center text-xs font-bold">2</span>
                   Selecciona la Materia
                 </h3>
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                  {mockSubjects.map((subject) => (
-                    <SubjectButton
-                      key={subject.id}
-                      subject={subject}
-                      onSelect={() => setSelectedSubject(subject.id)}
-                      isSelected={selectedSubject === subject.id}
-                    />
-                  ))}
-                </div>
+                {filteredSubjects.length > 0 ? (
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    {filteredSubjects.map((subject) => (
+                      <SubjectButton
+                        key={subject.id}
+                        subject={subject}
+                        onSelect={() => setSelectedSubject(subject.id)}
+                        isSelected={selectedSubject === subject.id}
+                      />
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-center py-8 text-gray-400 bg-gray-50 rounded-xl">
+                    <BookOpen size={32} className="mx-auto mb-2 opacity-50" />
+                    <p>{selectedCourse ? 'No hay materias asignadas a este curso' : 'Selecciona un curso primero'}</p>
+                  </div>
+                )}
               </div>
 
               {/* Start Button */}
               <button
                 onClick={handleStartSession}
-                disabled={!selectedCourse || !selectedSubject}
+                disabled={!selectedCourse || !selectedSubject || isCreatingSession}
                 className="w-full py-4 bg-gradient-to-r from-indigo-500 to-purple-600 hover:from-indigo-600 hover:to-purple-700 text-white font-semibold text-lg rounded-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-lg hover:shadow-xl flex items-center justify-center gap-3"
               >
-                <Play size={24} />
-                Iniciar Proyección de QR
+                {isCreatingSession ? (
+                  <>
+                    <Loader2 size={24} className="animate-spin" />
+                    Creando sesión...
+                  </>
+                ) : (
+                  <>
+                    <Play size={24} />
+                    Iniciar Proyección de QR
+                  </>
+                )}
               </button>
             </div>
           </div>
@@ -588,25 +754,29 @@ export const ProfesorPage: React.FC = () => {
         {/* History View */}
         {viewMode === 'history' && (
           <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
-            <h2 className="text-lg font-semibold text-gray-900 mb-6">Historial de Sesiones</h2>
-
-            <div className="space-y-4">
-              {mockTodaySessions.map((session) => (
-                <SessionItem
-                  key={session.id}
-                  session={session}
-                  courses={mockCourses}
-                  subjects={mockSubjects}
-                />
-              ))}
-
-              {mockTodaySessions.length === 0 && (
-                <div className="text-center py-12 text-gray-400">
-                  <History size={48} className="mx-auto mb-3 opacity-50" />
-                  <p>No hay historial de sesiones</p>
-                </div>
-              )}
+            <div className="flex items-center justify-between mb-6">
+              <h2 className="text-lg font-semibold text-gray-900">Historial de Sesiones</h2>
+              <button
+                onClick={fetchProfesorData}
+                className="flex items-center gap-2 text-sm text-indigo-600 hover:text-indigo-700"
+              >
+                <RefreshCw size={16} />
+                Actualizar
+              </button>
             </div>
+
+            {sessionHistory.length > 0 ? (
+              <div className="space-y-4">
+                {sessionHistory.map((session) => (
+                  <SessionHistoryItem key={session.id} session={session} />
+                ))}
+              </div>
+            ) : (
+              <div className="text-center py-12 text-gray-400">
+                <History size={48} className="mx-auto mb-3 opacity-50" />
+                <p>No hay historial de sesiones</p>
+              </div>
+            )}
           </div>
         )}
 

@@ -1,22 +1,24 @@
 // ============================================
 // QR PROJECTOR COMPONENT
-// Componente para proyectar QR rotativo (Profesor)
-// Usa Supabase Realtime para broadcasting
+// Proyector QR con tokens HMAC seguros
 // ============================================
 
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import QRCode from 'qrcode';
 import { supabase } from '../../lib/supabase';
+import { API_URL } from '../../lib/api';
 import type { RealtimeChannel } from '@supabase/supabase-js';
 
 interface QRProjectorProps {
   sessionId: string;
+  sessionSecret: string;
   courseName: string;
   subjectName: string;
   profesorName: string;
+  qrRotationSeconds?: number;
+  isPaused?: boolean;
 }
 
-// Local type for attendance display (simpler than full AttendanceRecord)
 interface AttendeeRecord {
   id: string;
   studentId: string;
@@ -26,57 +28,81 @@ interface AttendeeRecord {
 }
 
 interface QRPayload {
-  sessionId: string;
-  token: string;
-  timestamp: number;
-  expiresAt: number;
-  nonce: string;
+  s: string; // sessionId
+  t: string; // token (HMAC)
+  n: string; // nonce
+  e: number; // expiresAt
 }
 
-// Generar token único
-function generateToken(): string {
-  const array = new Uint8Array(32);
+// Generar nonce único anti-replay
+function generateNonce(): string {
+  const array = new Uint8Array(8);
   crypto.getRandomValues(array);
   return Array.from(array, (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
-// Generar nonce anti-replay
-function generateNonce(): string {
-  return `${Date.now()}-${Math.random().toString(36).substring(2, 15)}`;
+// Generar token HMAC usando el secreto de la sesión
+async function generateHMACToken(secret: string, nonce: string, expiresAt: number): Promise<string> {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(`${nonce}:${expiresAt}`);
+  const keyData = encoder.encode(secret);
+
+  try {
+    const key = await crypto.subtle.importKey(
+      'raw',
+      keyData,
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      ['sign']
+    );
+
+    const signature = await crypto.subtle.sign('HMAC', key, data);
+    const hashArray = Array.from(new Uint8Array(signature));
+    return hashArray.map((b) => b.toString(16).padStart(2, '0')).join('').substring(0, 16);
+  } catch (err) {
+    // Fallback for environments without crypto.subtle
+    console.warn('crypto.subtle not available, using fallback');
+    const combined = `${secret}:${nonce}:${expiresAt}`;
+    let hash = 0;
+    for (let i = 0; i < combined.length; i++) {
+      const char = combined.charCodeAt(i);
+      hash = ((hash << 5) - hash) + char;
+      hash = hash & hash;
+    }
+    return Math.abs(hash).toString(16).padStart(16, '0').substring(0, 16);
+  }
 }
 
 export const QRProjector: React.FC<QRProjectorProps> = ({
   sessionId,
+  sessionSecret,
   courseName,
   subjectName,
   profesorName,
+  qrRotationSeconds = 7,
+  isPaused = false,
 }) => {
   const [qrDataUrl, setQrDataUrl] = useState<string>('');
   const [isActive, setIsActive] = useState(false);
-  const [countdown, setCountdown] = useState(7);
+  const [countdown, setCountdown] = useState(qrRotationSeconds);
   const [attendees, setAttendees] = useState<AttendeeRecord[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [isConnected, setIsConnected] = useState(false);
   const [currentToken, setCurrentToken] = useState<string>('');
+  const [totalStudents, setTotalStudents] = useState<number>(0);
 
   const countdownRef = useRef<NodeJS.Timeout | null>(null);
   const rotationRef = useRef<NodeJS.Timeout | null>(null);
   const qrChannelRef = useRef<RealtimeChannel | null>(null);
   const attendanceChannelRef = useRef<RealtimeChannel | null>(null);
 
-  const ROTATION_INTERVAL = 7; // segundos
+  const ROTATION_INTERVAL = qrRotationSeconds;
   const VALIDATION_WINDOW = 10; // segundos
 
-  // Generar imagen QR desde token
+  // Generar imagen QR desde payload
   const generateQRImage = useCallback(async (payload: QRPayload) => {
     try {
-      // Payload compacto para el QR
-      const qrContent = JSON.stringify({
-        s: payload.sessionId,
-        t: payload.token,
-        n: payload.nonce,
-        e: payload.expiresAt,
-      });
+      const qrContent = JSON.stringify(payload);
 
       const dataUrl = await QRCode.toDataURL(qrContent, {
         width: 400,
@@ -89,45 +115,72 @@ export const QRProjector: React.FC<QRProjectorProps> = ({
       });
 
       setQrDataUrl(dataUrl);
-      setCurrentToken(payload.token.substring(0, 8) + '...');
+      setCurrentToken(payload.t.substring(0, 8) + '...');
     } catch (err) {
       console.error('Error generando QR:', err);
       setError('Error generando código QR');
     }
   }, []);
 
-  // Generar nuevo QR y broadcast via Supabase
+  // Generar nuevo QR con HMAC token
   const generateAndBroadcastQR = useCallback(async () => {
-    const token = generateToken();
+    if (isPaused) return;
+
     const nonce = generateNonce();
     const timestamp = Date.now();
     const expiresAt = timestamp + VALIDATION_WINDOW * 1000;
 
+    // Generar token HMAC seguro
+    const token = await generateHMACToken(sessionSecret, nonce, expiresAt);
+
     const payload: QRPayload = {
-      sessionId,
-      token,
-      timestamp,
-      expiresAt,
-      nonce,
+      s: sessionId,
+      t: token,
+      n: nonce,
+      e: expiresAt,
     };
 
     // Generar QR localmente
     await generateQRImage(payload);
     setCountdown(ROTATION_INTERVAL);
 
-    // Broadcast via Supabase Realtime
+    // Broadcast via Supabase Realtime (opcional, para sincronización)
     if (qrChannelRef.current) {
       await qrChannelRef.current.send({
         type: 'broadcast',
         event: 'qr-update',
-        payload,
+        payload: {
+          sessionId,
+          token: token.substring(0, 8),
+          expiresAt,
+        },
       });
     }
-  }, [sessionId, generateQRImage]);
+  }, [sessionId, sessionSecret, isPaused, generateQRImage, ROTATION_INTERVAL, VALIDATION_WINDOW]);
+
+  // Cargar asistencias existentes al iniciar
+  const loadExistingAttendees = useCallback(async () => {
+    try {
+      const response = await fetch(`${API_URL}/api/attendance?sessionId=${sessionId}`);
+      const data = await response.json();
+
+      if (data.success && data.data) {
+        setAttendees(data.data.map((a: any) => ({
+          id: a.id,
+          studentId: a.studentId,
+          studentName: a.studentName,
+          scannedAt: a.scannedAt,
+          status: a.status,
+        })));
+      }
+    } catch (err) {
+      console.error('Error loading attendees:', err);
+    }
+  }, [sessionId]);
 
   // Inicializar canales de Supabase
   useEffect(() => {
-    // Canal para broadcasting QR a estudiantes
+    // Canal para broadcasting QR
     const qrChannel = supabase.channel(`qr-session-${sessionId}`, {
       config: {
         broadcast: { self: false },
@@ -138,7 +191,7 @@ export const QRProjector: React.FC<QRProjectorProps> = ({
       if (status === 'SUBSCRIBED') {
         setIsConnected(true);
         setError(null);
-        console.log('✅ QR Channel connected');
+        console.log('QR Channel connected');
       } else if (status === 'CLOSED' || status === 'CHANNEL_ERROR') {
         setIsConnected(false);
       }
@@ -159,7 +212,7 @@ export const QRProjector: React.FC<QRProjectorProps> = ({
           id: payload.id || Date.now().toString(),
           studentId: payload.studentId,
           studentName: payload.studentName || 'Estudiante',
-          scannedAt: new Date().toISOString(),
+          scannedAt: payload.scannedAt || new Date().toISOString(),
           status: payload.status || 'PRESENTE',
         };
 
@@ -175,7 +228,9 @@ export const QRProjector: React.FC<QRProjectorProps> = ({
 
     attendanceChannelRef.current = attendanceChannel;
 
-    // Cleanup
+    // Cargar asistencias existentes
+    loadExistingAttendees();
+
     return () => {
       if (qrChannelRef.current) {
         supabase.removeChannel(qrChannelRef.current);
@@ -184,32 +239,48 @@ export const QRProjector: React.FC<QRProjectorProps> = ({
         supabase.removeChannel(attendanceChannelRef.current);
       }
     };
-  }, [sessionId]);
+  }, [sessionId, loadExistingAttendees]);
+
+  // Manejar pausa
+  useEffect(() => {
+    if (isPaused && isActive) {
+      // Pausar rotación
+      if (countdownRef.current) clearInterval(countdownRef.current);
+      if (rotationRef.current) clearInterval(rotationRef.current);
+    } else if (!isPaused && isActive) {
+      // Reanudar rotación
+      generateAndBroadcastQR();
+
+      rotationRef.current = setInterval(() => {
+        generateAndBroadcastQR();
+      }, ROTATION_INTERVAL * 1000);
+
+      countdownRef.current = setInterval(() => {
+        setCountdown((prev) => (prev <= 1 ? ROTATION_INTERVAL : prev - 1));
+      }, 1000);
+    }
+  }, [isPaused, isActive, generateAndBroadcastQR, ROTATION_INTERVAL]);
 
   // Iniciar/Detener proyección
   const toggleProjection = useCallback(() => {
     if (isActive) {
-      // Detener
       setIsActive(false);
       setQrDataUrl('');
       if (countdownRef.current) clearInterval(countdownRef.current);
       if (rotationRef.current) clearInterval(rotationRef.current);
     } else {
-      // Iniciar
       setIsActive(true);
       generateAndBroadcastQR();
 
-      // Rotación periódica
       rotationRef.current = setInterval(() => {
         generateAndBroadcastQR();
       }, ROTATION_INTERVAL * 1000);
 
-      // Countdown visual
       countdownRef.current = setInterval(() => {
         setCountdown((prev) => (prev <= 1 ? ROTATION_INTERVAL : prev - 1));
       }, 1000);
     }
-  }, [isActive, generateAndBroadcastQR]);
+  }, [isActive, generateAndBroadcastQR, ROTATION_INTERVAL]);
 
   // Cleanup timers on unmount
   useEffect(() => {
@@ -219,8 +290,18 @@ export const QRProjector: React.FC<QRProjectorProps> = ({
     };
   }, []);
 
-  // Calcular progreso del countdown
+  // Auto-start projection
+  useEffect(() => {
+    if (isConnected && !isActive && !isPaused) {
+      toggleProjection();
+    }
+  }, [isConnected]);
+
   const countdownProgress = ((ROTATION_INTERVAL - countdown) / ROTATION_INTERVAL) * 100;
+
+  // Estadísticas
+  const presentCount = attendees.filter(a => a.status === 'PRESENTE').length;
+  const lateCount = attendees.filter(a => a.status === 'TARDANZA').length;
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 p-8">
@@ -246,16 +327,29 @@ export const QRProjector: React.FC<QRProjectorProps> = ({
                   }`}
                 />
                 <span className="text-sm text-gray-300">
-                  {isConnected ? 'Supabase Conectado' : 'Conectando...'}
+                  {isConnected ? 'Conectado' : 'Conectando...'}
                 </span>
               </div>
 
-              {/* Contador de asistentes */}
-              <div className="bg-white/10 px-4 py-2 rounded-lg">
-                <span className="text-2xl font-bold text-white">
-                  {attendees.length}
-                </span>
-                <span className="text-sm text-gray-300 ml-2">presentes</span>
+              {/* Estado de pausa */}
+              {isPaused && (
+                <div className="px-4 py-2 bg-yellow-500/20 border border-yellow-500 rounded-lg">
+                  <span className="text-yellow-300 font-medium">PAUSADO</span>
+                </div>
+              )}
+
+              {/* Contadores */}
+              <div className="flex gap-2">
+                <div className="bg-green-500/20 px-4 py-2 rounded-lg">
+                  <span className="text-2xl font-bold text-green-400">{presentCount}</span>
+                  <span className="text-sm text-green-300 ml-2">presentes</span>
+                </div>
+                {lateCount > 0 && (
+                  <div className="bg-amber-500/20 px-4 py-2 rounded-lg">
+                    <span className="text-2xl font-bold text-amber-400">{lateCount}</span>
+                    <span className="text-sm text-amber-300 ml-2">tardanzas</span>
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -272,9 +366,8 @@ export const QRProjector: React.FC<QRProjectorProps> = ({
           {/* QR Code Section */}
           <div className="lg:col-span-2">
             <div className="bg-white/5 backdrop-blur-sm rounded-2xl p-8 border border-white/10">
-              {/* QR Display */}
               <div className="flex flex-col items-center">
-                {isActive && qrDataUrl ? (
+                {isActive && qrDataUrl && !isPaused ? (
                   <>
                     {/* QR Image */}
                     <div className="relative">
@@ -318,15 +411,24 @@ export const QRProjector: React.FC<QRProjectorProps> = ({
 
                     {/* Token Info */}
                     <div className="mt-8 text-center">
-                      <p className="text-gray-500 text-xs">Token actual</p>
+                      <p className="text-gray-500 text-xs">Token HMAC</p>
                       <p className="text-purple-400 font-mono text-sm">{currentToken}</p>
                     </div>
 
-                    {/* Instructions */}
                     <p className="mt-4 text-gray-300 text-center">
-                      El código se actualiza automáticamente cada {ROTATION_INTERVAL} segundos
+                      El código se actualiza cada {ROTATION_INTERVAL} segundos
                     </p>
                   </>
+                ) : isPaused ? (
+                  <div className="flex flex-col items-center justify-center h-96">
+                    <div className="w-24 h-24 rounded-full bg-yellow-500/20 flex items-center justify-center mb-4">
+                      <svg className="w-12 h-12 text-yellow-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 9v6m4-6v6m7-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                      </svg>
+                    </div>
+                    <p className="text-yellow-300 text-xl font-semibold">Proyección Pausada</p>
+                    <p className="text-gray-400 mt-2">Presiona Reanudar para continuar</p>
+                  </div>
                 ) : (
                   <div className="flex flex-col items-center justify-center h-96">
                     <svg
@@ -343,23 +445,25 @@ export const QRProjector: React.FC<QRProjectorProps> = ({
                       />
                     </svg>
                     <p className="text-gray-400 text-lg">
-                      Presiona el botón para iniciar la proyección del QR
+                      Esperando conexión...
                     </p>
                   </div>
                 )}
 
                 {/* Toggle Button */}
-                <button
-                  onClick={toggleProjection}
-                  disabled={!isConnected}
-                  className={`mt-8 px-8 py-4 rounded-xl font-semibold text-lg transition-all ${
-                    isActive
-                      ? 'bg-red-500 hover:bg-red-600 text-white'
-                      : 'bg-purple-500 hover:bg-purple-600 text-white'
-                  } disabled:opacity-50 disabled:cursor-not-allowed`}
-                >
-                  {isActive ? 'Detener Proyección' : 'Iniciar Proyección'}
-                </button>
+                {!isPaused && (
+                  <button
+                    onClick={toggleProjection}
+                    disabled={!isConnected}
+                    className={`mt-8 px-8 py-4 rounded-xl font-semibold text-lg transition-all ${
+                      isActive
+                        ? 'bg-red-500 hover:bg-red-600 text-white'
+                        : 'bg-purple-500 hover:bg-purple-600 text-white'
+                    } disabled:opacity-50 disabled:cursor-not-allowed`}
+                  >
+                    {isActive ? 'Detener Proyección' : 'Iniciar Proyección'}
+                  </button>
+                )}
               </div>
             </div>
           </div>
@@ -386,12 +490,12 @@ export const QRProjector: React.FC<QRProjectorProps> = ({
                         animationDelay: `${index * 50}ms`,
                       }}
                     >
-                      {/* Avatar */}
-                      <div className="w-10 h-10 bg-purple-500 rounded-full flex items-center justify-center text-white font-semibold">
+                      <div className={`w-10 h-10 rounded-full flex items-center justify-center text-white font-semibold ${
+                        record.status === 'TARDANZA' ? 'bg-amber-500' : 'bg-purple-500'
+                      }`}>
                         {record.studentName?.[0] || 'E'}
                       </div>
 
-                      {/* Info */}
                       <div className="flex-1">
                         <p className="text-white font-medium">
                           {record.studentName}
@@ -401,18 +505,42 @@ export const QRProjector: React.FC<QRProjectorProps> = ({
                         </p>
                       </div>
 
-                      {/* Status Badge */}
-                      <span className="px-2 py-1 bg-green-500/20 text-green-400 text-xs rounded-full">
+                      <span className={`px-2 py-1 text-xs rounded-full ${
+                        record.status === 'TARDANZA'
+                          ? 'bg-amber-500/20 text-amber-400'
+                          : 'bg-green-500/20 text-green-400'
+                      }`}>
                         {record.status}
                       </span>
                     </div>
                   ))
                 )}
               </div>
+
+              {/* Resumen */}
+              {attendees.length > 0 && (
+                <div className="mt-6 pt-4 border-t border-white/10">
+                  <div className="flex justify-between text-sm">
+                    <span className="text-gray-400">Total registrados:</span>
+                    <span className="text-white font-semibold">{attendees.length}</span>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </div>
       </div>
+
+      {/* Animation styles */}
+      <style>{`
+        @keyframes fade-in {
+          from { opacity: 0; transform: translateY(-10px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+        .animate-fade-in {
+          animation: fade-in 0.3s ease-out forwards;
+        }
+      `}</style>
     </div>
   );
 };
