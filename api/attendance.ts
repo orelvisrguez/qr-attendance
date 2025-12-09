@@ -4,7 +4,7 @@
 // ============================================
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { supabaseAdmin } from './_lib/supabase';
+import { supabaseAdmin } from './_lib/supabase.js';
 import crypto from 'crypto';
 
 // Configuración

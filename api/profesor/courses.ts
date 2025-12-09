@@ -4,7 +4,7 @@
 // ============================================
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { supabaseAdmin } from '../_lib/supabase';
+import { supabaseAdmin } from '../_lib/supabase.js';
 
 // CORS headers helper
 function setCorsHeaders(res: VercelResponse) {

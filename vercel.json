@@ -25,6 +25,18 @@
       "destination": "/api/settings"
     },
     {
+      "source": "/api/sessions/:path*",
+      "destination": "/api/sessions"
+    },
+    {
+      "source": "/api/attendance/:path*",
+      "destination": "/api/attendance"
+    },
+    {
+      "source": "/api/profesor/:path*",
+      "destination": "/api/profesor/courses"
+    },
+    {
       "source": "/((?!api/).*)",
       "destination": "/index.html"
     }
