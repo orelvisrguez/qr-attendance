@@ -4,7 +4,7 @@
 // ============================================
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { supabaseAdmin } from './_lib/supabase.js';
+import { supabaseAdmin, isSupabaseConfigured } from './_lib/supabase.js';
 import crypto from 'crypto';
 
 // Mock users para demo (cuando la DB no tiene usuarios)
@@ -79,31 +79,33 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       let user = null;
       let isFromDatabase = false;
 
-      try {
-        const { data: dbUser, error } = await supabaseAdmin
-          .from('users')
-          .select('*')
-          .eq('email', email.toLowerCase())
-          .eq('is_active', true)
-          .single();
+      if (isSupabaseConfigured) {
+        try {
+          const { data: dbUser, error } = await supabaseAdmin
+            .from('users')
+            .select('*')
+            .eq('email', email.toLowerCase())
+            .eq('is_active', true)
+            .single();
 
-        if (dbUser && !error) {
-          // Verificar contraseña (asumiendo hash SHA-256)
-          const hashedPassword = hashPassword(password);
-          if (dbUser.password === hashedPassword || dbUser.password === password) {
-            user = {
-              id: dbUser.id,
-              email: dbUser.email,
-              firstName: dbUser.first_name,
-              lastName: dbUser.last_name,
-              role: dbUser.role,
-              isActive: dbUser.is_active,
-            };
-            isFromDatabase = true;
+          if (dbUser && !error) {
+            // Verificar contraseña (asumiendo hash SHA-256)
+            const hashedPassword = hashPassword(password);
+            if (dbUser.password === hashedPassword || dbUser.password === password) {
+              user = {
+                id: dbUser.id,
+                email: dbUser.email,
+                firstName: dbUser.first_name,
+                lastName: dbUser.last_name,
+                role: dbUser.role,
+                isActive: dbUser.is_active,
+              };
+              isFromDatabase = true;
+            }
           }
+        } catch (dbError) {
+          console.log('Database not available, using mock users');
         }
-      } catch (dbError) {
-        console.log('Database not available, using mock users');
       }
 
       // Fallback a usuarios mock si no hay DB o no se encontró usuario

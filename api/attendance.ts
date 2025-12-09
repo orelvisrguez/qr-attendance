@@ -4,7 +4,7 @@
 // ============================================
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { supabaseAdmin } from './_lib/supabase.js';
+import { supabaseAdmin, isSupabaseConfigured } from './_lib/supabase.js';
 import crypto from 'crypto';
 
 // Configuración
@@ -48,6 +48,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
+  }
+
+  // Verificar que Supabase está configurado
+  if (!isSupabaseConfigured) {
+    return res.status(503).json({
+      success: false,
+      error: 'Base de datos no configurada. La asistencia requiere conexión a la base de datos.',
+    });
   }
 
   // ============================================
